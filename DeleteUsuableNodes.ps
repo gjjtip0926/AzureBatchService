@@ -1,0 +1,83 @@
+# Get Azure Batch Account by name
+
+$batchAccount = Get-AzBatchAccount -AccountName "<your-batch-account-name>"
+
+# Get all pools under this account
+
+$pools = Get-AzBatchPool -BatchContext $batchAccount
+
+Write-Output "$(get-Date) - Batch Account Name: $($batchAccount.AccountName)"
+
+Write-Output "$(get-Date) - Starting to loop through each pool"
+
+ 
+
+#loop all pools in parallel
+
+$pools | ForEach-Object -Parallel {
+
+    # print out pool name
+
+    $batchAccountName = $Using:batchAccount.AccountName
+
+    # get all nodes in this pool
+
+    Write-Output "$(get-Date) - pool name: $($_.id)"
+
+    $nodes = Get-AzBatchComputeNode -poolID $_.id -BatchContext $using:batchAccount
+
+    # Get all unusable nodes in this pool
+
+    $unusableNodes = Get-AzBatchComputeNode -poolID $_.id -Filter "state eq 'Unusable'" -BatchContext $using:batchAccount
+
+    # Check if there is any unusable node
+
+    if($unusableNodes -ne $null -and $unusableNodes.count -ne 0 ) {
+
+        # Loop through the node to delete them
+
+        Write-Output "$(get-Date) - unusable Node Id: $($unusableNodes.Id)"
+
+        Write-Output "$(get-Date) - remove unusable Node Id: $($unusableNodes.Id) from pool: $($_.id) in batch account: $($using:batchAccount.AccountName)"
+
+        # Workaround code : For autoscaling pool, we need to disable autoscale first before removing the node
+
+        $CurrentFormula = $_.AutoScaleFormula
+
+        $CurrentInterval = $_.AutoScaleEvaluationInterval
+
+        Disable-AzBatchAutoScale -Id $_.id -BatchContext $using:batchAccount
+
+        Remove-AzBatchComputeNode -PoolId $_.id -Id $unusableNodes.Id -DeallocationOption Terminate -Force -BatchContext $using:batchAccount
+
+        Write-Output "$(get-Date) - disable and remove node on pool $($_.id)  start wait for steady"
+
+ 
+
+        #get new status of pool and only enable the autoScale again when it's steady.
+
+        $tempPool = Get-AzBatchPool -Id $_.Id -BatchContext $using:batchAccount
+
+        while ($tempPool.AllocationState -ne "Steady") {
+
+            Start-Sleep -Seconds 5
+
+            $tempPool = Get-AzBatchPool -Id $_.Id -BatchContext $using:batchAccount
+
+            Write-Output "$(get-Date) - Pool $($_.id) status: $($tempPool.AllocationState)" 
+
+        }
+
+ 
+
+        Write-Output "$(get-Date) - $($_.id) is steady now, enable auto-scale"
+
+ 
+
+        Enable-AzBatchAutoScale -Id $_.id -AutoScaleEvaluationInterval $CurrentInterval -AutoScaleFormula $CurrentFormula -BatchContext $using:batchAccount
+
+        # End Workaround
+
+    }
+
+}-ThrottleLimit 10
